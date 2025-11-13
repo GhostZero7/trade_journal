@@ -1,0 +1,54 @@
+{
+  "project_info": {
+    "project_number": "195326385268",
+    "project_id": "trade-journal-e4eb6",
+    "storage_bucket": "trade-journal-e4eb6.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:195326385268:android:deb0355e937ce2c69a0521",
+        "android_client_info": {
+          "package_name": "com.example.trade_journal"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "195326385268-lp4fakm2ssprp348iq0tndkav873m3a9.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.trade_journal",
+            "certificate_hash": "f89bf5449229812daab880509fb2356793b5c1e5"
+          }
+        },
+        {
+          "client_id": "195326385268-3mvqje1e6bnt12j70o06n3flepul90r3.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAQn52Yv_QsXMrLm-fK7KspXD0ZKAdxO5w"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "195326385268-3mvqje1e6bnt12j70o06n3flepul90r3.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "195326385268-prh00u5t9f216rh2pm18003pv0bfvi94.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.tradeJournal"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
