@@ -12,3 +12,18 @@ GeneratedPluginRegistrant.java
 key.properties
 **/*.keystore
 **/*.jks
+
+# Sensitive data and secrets
+*.keystore
+*.jks
+*.properties
+*.gradle
+local.properties
+
+# Firebase configuration files
+**/google-services.json
+**/GoogleService-Info.plist
+
+# Other sensitive files
+.env
+secrets.json
