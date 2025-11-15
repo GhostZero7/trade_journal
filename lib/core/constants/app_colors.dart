@@ -7,5 +7,6 @@ class AppColors {
   static const Color background = Color(0xFFFFFFFF);   // White
   static const Color textPrimary = Color(0xFF1E1E1E);  // Dark Text
   static const Color textSecondary = Color(0xFF757575); // Gray Text
-  static const Color border = Color(0xFFE0E0E0);       // Light Border
+  static const Color border = Color(0xFF2ECC71);  
+  static const error = Color(0xFFE53935); // red     // Light Border
 }
