@@ -1,7 +1,9 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/theme/text_styles.dart';
+import '../../../core/theme/theme_service.dart';
 import '../../../widgets/buttons/primary_button.dart';
 import '../../../services/auth_service.dart';
 import '../../../services/google_auth_service.dart';
@@ -49,6 +51,12 @@ class _SignupScreenState extends State<SignupScreen>
   void dispose() {
     _bgController.dispose();
     super.dispose();
+  }
+
+  // Theme helper method
+  AppColors _getTheme(BuildContext context) {
+    final themeService = Provider.of<ThemeService>(context, listen: true);
+    return themeService.isDarkMode ? AppColors.dark : AppColors.light;
   }
 
   void _handleSignup() async {
@@ -102,6 +110,7 @@ class _SignupScreenState extends State<SignupScreen>
 
   @override
   Widget build(BuildContext context) {
+    final theme = _getTheme(context);
     final passErrorText =
         _passMismatchError ? "Passwords do not match." : null;
 
@@ -109,7 +118,7 @@ class _SignupScreenState extends State<SignupScreen>
         _emailInUseError ? "Email already in use." : null;
 
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: theme.background,
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 40),
@@ -118,7 +127,7 @@ class _SignupScreenState extends State<SignupScreen>
             children: [
               Text(
                 "Create Account ✨",
-                style: AppTextStyles.heading1.copyWith(
+                style: AppTextStyles.heading1().copyWith(
                   fontSize: 34,
                   fontWeight: FontWeight.w800,
                 ),
@@ -126,15 +135,15 @@ class _SignupScreenState extends State<SignupScreen>
               const SizedBox(height: 8),
               Text(
                 "Join and start tracking your trades",
-                style: AppTextStyles.bodySecondary.copyWith(
+                style: AppTextStyles.bodySecondary(color: theme.textFaded).copyWith(
                   fontSize: 16,
-                  color: Colors.grey[600],
                 ),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 40),
 
               _buildInput(
+                context: context,
                 controller: _nameCtrl,
                 label: "Full Name",
                 icon: Icons.person_outline,
@@ -142,6 +151,7 @@ class _SignupScreenState extends State<SignupScreen>
               const SizedBox(height: 18),
 
               _buildInput(
+                context: context,
                 controller: _emailCtrl,
                 label: "Email",
                 icon: Icons.email_outlined,
@@ -152,6 +162,7 @@ class _SignupScreenState extends State<SignupScreen>
               const SizedBox(height: 18),
 
               _buildInput(
+                context: context,
                 controller: _passCtrl,
                 label: "Password",
                 icon: Icons.lock_outline,
@@ -161,7 +172,7 @@ class _SignupScreenState extends State<SignupScreen>
                 suffix: IconButton(
                   icon: Icon(
                     _showPass ? Icons.visibility : Icons.visibility_off,
-                    color: Colors.grey,
+                    color: theme.textFaded,
                   ),
                   onPressed: () => setState(() => _showPass = !_showPass),
                 ),
@@ -169,6 +180,7 @@ class _SignupScreenState extends State<SignupScreen>
               const SizedBox(height: 18),
 
               _buildInput(
+                context: context,
                 controller: _confirmCtrl,
                 label: "Confirm Password",
                 icon: Icons.lock_person_outlined,
@@ -180,7 +192,7 @@ class _SignupScreenState extends State<SignupScreen>
                     _showConfirmPass
                         ? Icons.visibility
                         : Icons.visibility_off,
-                    color: Colors.grey,
+                    color: theme.textFaded,
                   ),
                   onPressed: () =>
                       setState(() => _showConfirmPass = !_showConfirmPass),
@@ -193,16 +205,16 @@ class _SignupScreenState extends State<SignupScreen>
                   !_emailInUseError)
                 Text(
                   _errorMessage!,
-                  style: const TextStyle(
-                    color: AppColors.error,
+                  style: TextStyle(
+                    color: theme.error,
                     fontSize: 14,
                   ),
                 ),
               const SizedBox(height: 12),
 
               _loading
-                  ? const CircularProgressIndicator(
-                      color: AppColors.primary,
+                  ? CircularProgressIndicator(
+                      color: theme.primary,
                     )
                   : PrimaryButton(
                       text: "Sign Up",
@@ -216,7 +228,7 @@ class _SignupScreenState extends State<SignupScreen>
                 children: [
                   Expanded(
                     child: Divider(
-                      color: Colors.grey[400],
+                      color: theme.textFaded,
                       thickness: 1,
                     ),
                   ),
@@ -225,14 +237,14 @@ class _SignupScreenState extends State<SignupScreen>
                     child: Text(
                       "or",
                       style: TextStyle(
-                        color: Colors.grey[600],
+                        color: theme.textFaded,
                         fontSize: 14,
                       ),
                     ),
                   ),
                   Expanded(
                     child: Divider(
-                      color: Colors.grey[400],
+                      color: theme.textFaded,
                       thickness: 1,
                     ),
                   ),
@@ -257,10 +269,10 @@ class _SignupScreenState extends State<SignupScreen>
                   "lib/assets/images/google_logo.png",
                   height: 20,
                 ),
-                label: const Text(
+                label: Text(
                   "Sign up with Google",
                   style: TextStyle(
-                    color: Colors.black87,
+                    color: theme.textLight,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
@@ -269,8 +281,8 @@ class _SignupScreenState extends State<SignupScreen>
                     horizontal: 20,
                     vertical: 12,
                   ),
-                  side: const BorderSide(color: Colors.grey),
-                  backgroundColor: Colors.white,
+                  side: BorderSide(color: theme.textFaded),
+                  backgroundColor: theme.cardDark,
                 ),
               ),
 
@@ -278,13 +290,14 @@ class _SignupScreenState extends State<SignupScreen>
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Text("Already have an account? "),
+                  Text("Already have an account? ", 
+                       style: TextStyle(color: theme.textFaded)),
                   GestureDetector(
                     onTap: () => Navigator.pop(context),
-                    child: const Text(
+                    child: Text(
                       "Login",
                       style: TextStyle(
-                        color: AppColors.primary,
+                        color: theme.primary,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -299,6 +312,7 @@ class _SignupScreenState extends State<SignupScreen>
   }
 
   Widget _buildInput({
+    required BuildContext context,
     required TextEditingController controller,
     required String label,
     required IconData icon,
@@ -308,7 +322,7 @@ class _SignupScreenState extends State<SignupScreen>
     String? errorText,
     Widget? suffix,
   }) {
-    const green = Color(0xFF00C853);
+    final theme = _getTheme(context);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -317,17 +331,18 @@ class _SignupScreenState extends State<SignupScreen>
           controller: controller,
           obscureText: obscure,
           keyboardType: keyboardType,
+          style: TextStyle(color: theme.textLight),
           decoration: InputDecoration(
             labelText: label,
-            labelStyle: const TextStyle(
+            labelStyle: TextStyle(
               fontSize: 15,
-              color: Colors.black87,
+              color: theme.textLight,
             ),
 
             filled: true,
-            fillColor: Colors.white,
+            fillColor: theme.cardDark,
 
-            prefixIcon: Icon(icon, color: green),
+            prefixIcon: Icon(icon, color: theme.primary),
             suffixIcon: suffix,
 
             contentPadding: const EdgeInsets.symmetric(
@@ -335,32 +350,32 @@ class _SignupScreenState extends State<SignupScreen>
               horizontal: 16,
             ),
 
-            // Green borders always
+            // Theme-aware borders
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(14),
               borderSide: BorderSide(
-                color: green,
+                color: theme.primary,
                 width: 1.6,
               ),
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(14),
               borderSide: BorderSide(
-                color: green,
+                color: theme.primary,
                 width: 2,
               ),
             ),
             errorBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(14),
-              borderSide: const BorderSide(
-                color: Colors.red,
+              borderSide: BorderSide(
+                color: theme.error,
                 width: 1.8,
               ),
             ),
             focusedErrorBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(14),
-              borderSide: const BorderSide(
-                color: Colors.red,
+              borderSide: BorderSide(
+                color: theme.error,
                 width: 2,
               ),
             ),

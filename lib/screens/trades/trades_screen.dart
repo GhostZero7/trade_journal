@@ -1,7 +1,14 @@
 // Trades screen
+import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:provider/provider.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+
 import '../../core/constants/app_colors.dart';
+import '../../core/theme/text_styles.dart';
+import '../../core/theme/theme_service.dart';
+import '../../providers/trades_provider.dart';
 
 class AddTradeScreen extends StatefulWidget {
   const AddTradeScreen({super.key});
@@ -21,12 +28,21 @@ class _AddTradeScreenState extends State<AddTradeScreen> {
   String _pair = "EURUSD";
   String _type = "Buy";
   double _profit = 0.0;
+  File? _screenshot;
+  final ImagePicker _picker = ImagePicker();
 
   bool _loading = false;
+  bool _uploadingImage = false;
 
-  // ------------------------
+  // Theme helper
+  AppColors _getTheme(BuildContext context) {
+    final themeService = Provider.of<ThemeService>(context, listen: true);
+    return themeService.isDarkMode ? AppColors.dark : AppColors.light;
+  }
+
+  // -----------------------------
   // Auto Calculate P/L
-  // ------------------------
+  // -----------------------------
   void _calculatePL() {
     double entry = double.tryParse(_entryCtrl.text) ?? 0;
     double exit = double.tryParse(_exitCtrl.text) ?? 0;
@@ -43,9 +59,52 @@ class _AddTradeScreenState extends State<AddTradeScreen> {
     setState(() => _profit = result);
   }
 
-  // ------------------------
-  // Save Trade to Firestore
-  // ------------------------
+  // -----------------------------
+  // Screenshot Upload Functions
+  // -----------------------------
+  Future<void> _pickImage() async {
+    final XFile? image = await _picker.pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 1200,
+      maxHeight: 1200,
+      imageQuality: 80,
+    );
+
+    if (image != null) {
+      setState(() {
+        _screenshot = File(image.path);
+      });
+    }
+  }
+
+  Future<String?> _uploadScreenshot() async {
+    if (_screenshot == null) return null;
+
+    setState(() => _uploadingImage = true);
+
+    try {
+      final String fileName =
+          'trade_screenshot_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final Reference storageRef =
+          FirebaseStorage.instance.ref().child('trade_screenshots/$fileName');
+      final UploadTask uploadTask = storageRef.putFile(_screenshot!);
+      final TaskSnapshot snapshot = await uploadTask;
+      final String downloadUrl = await snapshot.ref.getDownloadURL();
+
+      setState(() => _uploadingImage = false);
+      return downloadUrl;
+    } catch (e) {
+      setState(() => _uploadingImage = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to upload screenshot: $e')),
+      );
+      return null;
+    }
+  }
+
+  // -----------------------------
+  // Save Using Provider
+  // -----------------------------
   Future<void> _saveTrade() async {
     if (_entryCtrl.text.isEmpty ||
         _exitCtrl.text.isEmpty ||
@@ -58,57 +117,75 @@ class _AddTradeScreenState extends State<AddTradeScreen> {
 
     setState(() => _loading = true);
 
-    await FirebaseFirestore.instance.collection("trades").add({
-      "pair": _pair,
-      "type": _type,
-      "entry": double.tryParse(_entryCtrl.text) ?? 0,
-      "exit": double.tryParse(_exitCtrl.text) ?? 0,
-      "lots": double.tryParse(_lotCtrl.text) ?? 0,
-      "profit": _profit,
-      "notes": _notesCtrl.text.trim(),
-      "created_at": Timestamp.now(),
-    });
+    try {
+      String? screenshotUrl;
+      if (_screenshot != null) {
+        screenshotUrl = await _uploadScreenshot();
+      }
 
-    setState(() => _loading = false);
+      final tradeData = {
+        "symbol": _pair,
+        "type": _type,
+        "amount": double.tryParse(_lotCtrl.text) ?? 0,
+        "result": _profit >= 0 ? "Win" : "Loss",
+        "profit": _profit,
+        "notes": _notesCtrl.text.trim(),
+        "screenshotUrl": screenshotUrl,
+      };
 
-    if (mounted) {
-      Navigator.pop(context);
+      await Provider.of<TradesProvider>(context, listen: false)
+          .addTrade(tradeData);
+
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Trade added successfully!")),
+        );
+      }
+    } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Trade added")),
+        SnackBar(content: Text("Error saving trade: $e")),
       );
     }
+
+    setState(() => _loading = false);
   }
 
-  // ------------------------
-  // UI COMPONENT
-  // ------------------------
-  Widget _inputField(
-      {required String label,
-      required TextEditingController controller,
-      TextInputType type = TextInputType.number}) {
+  // -----------------------------
+  // Input Field UI Component
+  // -----------------------------
+  Widget _inputField({
+    required BuildContext context,
+    required String label,
+    required TextEditingController controller,
+    TextInputType type = TextInputType.number,
+  }) {
+    final theme = _getTheme(context);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(label,
-            style: const TextStyle(
-                fontWeight: FontWeight.w600, fontSize: 14, color: Colors.grey)),
+            style: TextStyle(
+                fontWeight: FontWeight.w600, fontSize: 14, color: theme.textFaded)),
         const SizedBox(height: 6),
         TextField(
           controller: controller,
           keyboardType: type,
+          style: TextStyle(color: theme.textLight),
           onChanged: (_) => _calculatePL(),
           decoration: InputDecoration(
             filled: true,
-            fillColor: Colors.transparent,
+            fillColor: theme.cardDark,
             contentPadding:
                 const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(14),
-              borderSide: BorderSide(color: AppColors.primary.withOpacity(0.6)),
+              borderSide: BorderSide(color: theme.primary.withOpacity(0.6)),
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(14),
-              borderSide: BorderSide(color: AppColors.primary, width: 2),
+              borderSide: BorderSide(color: theme.primary, width: 2),
             ),
           ),
         ),
@@ -116,38 +193,99 @@ class _AddTradeScreenState extends State<AddTradeScreen> {
     );
   }
 
-  // ------------------------
+  // -----------------------------
+  // Screenshot Preview Widget
+  // -----------------------------
+  Widget _buildScreenshotPreview() {
+    final theme = _getTheme(context);
+
+    if (_screenshot == null) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(40),
+        decoration: BoxDecoration(
+          color: theme.cardDark,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: theme.primary.withOpacity(0.3)),
+        ),
+        child: Column(
+          children: [
+            Icon(Icons.photo_library, size: 50, color: theme.textFaded),
+            const SizedBox(height: 10),
+            Text("No screenshot selected",
+                style: TextStyle(color: theme.textFaded)),
+          ],
+        ),
+      );
+    }
+
+    return Stack(
+      children: [
+        Container(
+          width: double.infinity,
+          height: 200,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            image: DecorationImage(
+              image: FileImage(_screenshot!),
+              fit: BoxFit.cover,
+            ),
+          ),
+        ),
+        Positioned(
+          top: 8,
+          right: 8,
+          child: CircleAvatar(
+            backgroundColor: theme.cardDark.withOpacity(0.8),
+            child: IconButton(
+              icon:
+                  Icon(Icons.close, color: theme.textLight, size: 20),
+              onPressed: () {
+                setState(() => _screenshot = null);
+              },
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // -----------------------------
   // MAIN BUILD UI
-  // ------------------------
+  // -----------------------------
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      appBar: AppBar(
-        title: const Text("Add Trade"),
-        backgroundColor: AppColors.background,
-        elevation: 0,
-      ),
+    final theme = _getTheme(context);
 
+    return Scaffold(
+      backgroundColor: theme.background,
+      appBar: AppBar(
+        title: Text("Add Trade", style: TextStyle(color: theme.textLight)),
+        backgroundColor: theme.background,
+        elevation: 0,
+        iconTheme: IconThemeData(color: theme.textLight),
+      ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // ---------------- Pair Dropdown ----------------
-          const Text("Pair",
+          // Pair Dropdown
+          Text("Pair",
               style: TextStyle(
-                  fontWeight: FontWeight.w600, color: Colors.grey)),
+                  fontWeight: FontWeight.w600, color: theme.textFaded)),
           const SizedBox(height: 6),
 
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             decoration: BoxDecoration(
-              border: Border.all(
-                  color: AppColors.primary.withOpacity(0.6), width: 1),
+              color: theme.cardDark,
+              border: Border.all(color: theme.primary.withOpacity(0.6)),
               borderRadius: BorderRadius.circular(14),
             ),
             child: DropdownButtonHideUnderline(
               child: DropdownButton<String>(
                 value: _pair,
+                dropdownColor: theme.cardDark,
+                style: TextStyle(color: theme.textLight),
                 items: const [
                   DropdownMenuItem(value: "EURUSD", child: Text("EURUSD")),
                   DropdownMenuItem(value: "GBPUSD", child: Text("GBPUSD")),
@@ -161,75 +299,127 @@ class _AddTradeScreenState extends State<AddTradeScreen> {
 
           const SizedBox(height: 20),
 
-          // ---------------- Buy / Sell Toggle ----------------
-          const Text("Type",
+          // Buy / Sell Toggle
+          Text("Type",
               style: TextStyle(
-                  fontWeight: FontWeight.w600, color: Colors.grey)),
+                  fontWeight: FontWeight.w600, color: theme.textFaded)),
           const SizedBox(height: 6),
 
           Row(children: [
-            _typeButton("Buy", Colors.green),
+            _typeButton("Buy", Colors.green, context),
             const SizedBox(width: 12),
-            _typeButton("Sell", Colors.red),
+            _typeButton("Sell", Colors.red, context),
           ]),
 
           const SizedBox(height: 20),
 
-          // ---------------- Inputs ----------------
-          _inputField(label: "Entry Price", controller: _entryCtrl),
+          // Input fields
+          _inputField(context: context, label: "Entry Price", controller: _entryCtrl),
           const SizedBox(height: 16),
 
-          _inputField(label: "Exit Price", controller: _exitCtrl),
+          _inputField(context: context, label: "Exit Price", controller: _exitCtrl),
           const SizedBox(height: 16),
 
-          _inputField(label: "Lots", controller: _lotCtrl),
+          _inputField(context: context, label: "Lots", controller: _lotCtrl),
           const SizedBox(height: 20),
 
-          // ---------------- Profit Box ----------------
+          // Profit Box
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: _profit >= 0 ? Colors.green.withOpacity(0.15) : Colors.red.withOpacity(0.15),
+              color: _profit >= 0
+                  ? Colors.green.withOpacity(0.15)
+                  : Colors.red.withOpacity(0.15),
               borderRadius: BorderRadius.circular(14),
             ),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text("Profit:",
-                    style:
-                        TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-                Text("${_profit.toStringAsFixed(2)}",
+                Text("Profit:",
                     style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: _profit >= 0 ? Colors.green : Colors.red)),
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: theme.textLight)),
+                Text(
+                  _profit.toStringAsFixed(2),
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: _profit >= 0 ? Colors.green : Colors.red,
+                  ),
+                ),
               ],
             ),
           ),
 
           const SizedBox(height: 20),
 
-          // ---------------- Notes ----------------
+          // Screenshot upload preview
+          Text("Trade Screenshot (Optional)",
+              style: TextStyle(
+                  fontWeight: FontWeight.w600, color: theme.textFaded)),
+          const SizedBox(height: 6),
+
+          _buildScreenshotPreview(),
+
+          const SizedBox(height: 10),
+
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _pickImage,
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                side: BorderSide(color: theme.primary),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+              ),
+              icon: _uploadingImage
+                  ? SizedBox(
+                      height: 20,
+                      width: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: theme.primary,
+                      ),
+                    )
+                  : Icon(Icons.photo_library, color: theme.primary),
+              label: Text(
+                _uploadingImage ? "Uploading..." : "Select Screenshot",
+                style: TextStyle(color: theme.primary),
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 20),
+
+          // Notes
           _inputField(
-              label: "Notes", controller: _notesCtrl, type: TextInputType.text),
+            context: context,
+            label: "Notes",
+            controller: _notesCtrl,
+            type: TextInputType.text,
+          ),
 
           const SizedBox(height: 30),
 
-          // ---------------- Save Button ----------------
+          // Save Button
           _loading
-              ? const Center(child: CircularProgressIndicator())
+              ? Center(child: CircularProgressIndicator(color: theme.primary))
               : ElevatedButton(
                   onPressed: _saveTrade,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.primary,
+                    backgroundColor: theme.primary,
+                    foregroundColor: theme.cardDark,
                     minimumSize: const Size(double.infinity, 55),
                     shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14)),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
                   ),
                   child: const Text(
                     "Save Trade",
-                    style: TextStyle(
-                        fontSize: 16, fontWeight: FontWeight.bold),
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                   ),
                 ),
         ]),
@@ -237,8 +427,11 @@ class _AddTradeScreenState extends State<AddTradeScreen> {
     );
   }
 
-  // BUY / SELL BUTTON
-  Widget _typeButton(String label, Color color) {
+  // -----------------------------
+  // BUY / SELL Button
+  // -----------------------------
+  Widget _typeButton(String label, Color color, BuildContext context) {
+    final theme = _getTheme(context);
     final bool active = _type == label;
 
     return Expanded(
