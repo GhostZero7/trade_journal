@@ -6,6 +6,7 @@ import 'firebase_options.dart';
 import 'core/theme/theme_service.dart';
 import 'core/theme/app_theme.dart';
 import 'routes/app_routes.dart';
+import 'providers/trades_provider.dart'; // Make sure to import your TradesProvider
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -15,8 +16,11 @@ void main() async {
   );
 
   runApp(
-    ChangeNotifierProvider(
-      create: (_) => ThemeService(),
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => ThemeService()),
+        ChangeNotifierProvider(create: (_) => TradesProvider()), // ⭐ ADDED
+      ],
       child: const MyApp(),
     ),
   );

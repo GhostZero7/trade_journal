@@ -5,9 +5,11 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:provider/provider.dart';
+import 'dart:async';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/theme/text_styles.dart';
 import '../../../core/theme/theme_service.dart';
+import '../../../providers/trades_provider.dart';
 import '../settings/settings_screen.dart';
 import '../analytics/analytics_screen.dart';
 import '../trades/all_trades_screen.dart';
@@ -29,35 +31,53 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final _db = FirebaseFirestore.instance;
   
   DateTime? currentBackPressTime;
+  StreamSubscription<DocumentSnapshot>? _userSubscription; 
 
   String userName = '';
   String email = '';
-  int totalTrades = 0;
-  double totalProfit = 0.0;
-
-  // Advanced stats
-  double winRate = 0.0;
-  double avgProfit = 0.0;
-  double bestTrade = 0.0;
-  double worstTrade = 0.0;
-
-  // Calendar/profit map
-  Map<DateTime, bool> _profitDays = {};
-  DateTime _calendarDate = DateTime.now();
 
   // Bottom nav
   int _selectedIndex = 0;
   final GlobalKey _bottomNavKey = GlobalKey();
 
+  // Calendar animation
+  bool _showMoneyMode = false;
+  Timer? _animationTimer;
+
   @override
   void initState() {
     super.initState();
-    _loadEverything();
+    _setupUserListener(); 
     _saveLoginStatus();
+    _startAutoAnimation();
+    
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Provider.of<TradesProvider>(context, listen: false).fetchTrades();
+    });
+  }
+
+  @override
+  void dispose() {
+    _animationTimer?.cancel();
+    _userSubscription?.cancel(); 
+    super.dispose();
   }
 
   // ============================
-  // Save login status to SharedPreferences
+  // Auto Animation Timer
+  // ============================
+  void _startAutoAnimation() {
+    _animationTimer = Timer.periodic(const Duration(seconds: 4), (timer) {
+      if (mounted) {
+        setState(() {
+          _showMoneyMode = !_showMoneyMode;
+        });
+      }
+    });
+  }
+
+  // ============================
+  // Save login status
   // ============================
   Future<void> _saveLoginStatus() async {
     final prefs = await SharedPreferences.getInstance();
@@ -65,111 +85,100 @@ class _DashboardScreenState extends State<DashboardScreen> {
     await prefs.setString('lastLogin', DateTime.now().toIso8601String());
   }
 
-  Future<void> _loadEverything() async {
-    await _loadUserData();
-    await _computeTradeStats();
-    await _loadProfitCalendar();
-  }
-
   // ============================
-  // Load basic user profile
+  // Setup Real-time User Listener
   // ============================
-  Future<void> _loadUserData() async {
+  void _setupUserListener() {
     final uid = _auth.currentUser?.uid;
     if (uid == null) return;
-    try {
-      final doc = await _db.collection('users').doc(uid).get();
-      if (doc.exists) {
-        final data = doc.data()!;
+    
+    _userSubscription = _db.collection('users').doc(uid).snapshots().listen((snapshot) {
+      if (snapshot.exists && mounted) {
+        final data = snapshot.data()!;
         setState(() {
           userName = (data['name'] ?? 'Trader') as String;
           email = (data['email'] ?? '') as String;
         });
       }
-    } catch (e) {
-      print('Error loading user data: $e');
-    }
+    }, onError: (e) {
+      print('Error listening to user data: $e');
+    });
   }
 
   // ============================
-  // Compute aggregated trade stats
+  // Calculate Stats
   // ============================
-  Future<void> _computeTradeStats() async {
-    final uid = _auth.currentUser?.uid;
-    if (uid == null) return;
+  Map<String, dynamic> _calculateStats(List<Map<String, dynamic>> trades) {
+    if (trades.isEmpty) {
+      return {
+        'totalTrades': 0,
+        'totalProfit': 0.0,
+        'winRate': 0.0,
+        'avgProfit': 0.0,
+        'bestTrade': 0.0,
+        'worstTrade': 0.0,
+      };
+    }
 
-    try {
-      final snapshot = await _db
-          .collection('trades')
-          .doc(uid)
-          .collection('user_trades')
-          .get();
+    int tradesCount = trades.length;
+    double profitSum = 0.0;
+    int wins = 0;
+    double best = double.negativeInfinity;
+    double worst = double.infinity;
 
-      final docs = snapshot.docs;
-      int tradesCount = docs.length;
-      double profitSum = 0.0;
-      int wins = 0;
-      double best = double.negativeInfinity;
-      double worst = double.infinity;
+    for (final trade in trades) {
+      final profit = double.tryParse(trade['profit'].toString()) ?? 0.0;
+      profitSum += profit;
+      if (profit > 0) wins++;
+      if (profit > best) best = profit;
+      if (profit < worst) worst = profit;
+    }
 
-      for (final d in docs) {
-        final profit = double.tryParse(d['profit'].toString()) ?? 0.0;
-        profitSum += profit;
-        if (profit > 0) wins++;
-        if (profit > best) best = profit;
-        if (profit < worst) worst = profit;
+    return {
+      'totalTrades': tradesCount,
+      'totalProfit': profitSum,
+      'winRate': tradesCount == 0 ? 0.0 : (wins / tradesCount) * 100.0,
+      'avgProfit': tradesCount == 0 ? 0.0 : profitSum / tradesCount,
+      'bestTrade': best == double.negativeInfinity ? 0.0 : best,
+      'worstTrade': worst == double.infinity ? 0.0 : worst,
+    };
+  }
+
+  // ============================
+  // Build Calendar Data
+  // ============================
+  Map<DateTime, bool> _buildProfitCalendar(List<Map<String, dynamic>> trades) {
+    final Map<DateTime, bool> profitDays = {};
+
+    for (final trade in trades) {
+      final createdAt = trade['createdAt'];
+      final profit = double.tryParse(trade['profit'].toString()) ?? 0.0;
+      
+      if (createdAt == null) continue;
+      
+      DateTime tradeDate;
+      if (createdAt is Timestamp) {
+        tradeDate = createdAt.toDate();
+      } else if (createdAt is DateTime) {
+        tradeDate = createdAt;
+      } else {
+        continue;
       }
-
-      setState(() {
-        totalTrades = tradesCount;
-        totalProfit = profitSum;
-        winRate = tradesCount == 0 ? 0.0 : (wins / tradesCount) * 100.0;
-        avgProfit = tradesCount == 0 ? 0.0 : profitSum / tradesCount;
-        bestTrade = best == double.negativeInfinity ? 0.0 : best;
-        worstTrade = worst == double.infinity ? 0.0 : worst;
-      });
-    } catch (e) {
-      print('Error computing trade stats: $e');
-    }
-  }
-
-  // ============================
-  // Build a calendar of profitable days
-  // ============================
-  Future<void> _loadProfitCalendar() async {
-    final uid = _auth.currentUser?.uid;
-    if (uid == null) return;
-
-    try {
-      final snapshot = await _db
-          .collection('trades')
-          .doc(uid)
-          .collection('user_trades')
-          .get();
-
-      final Map<DateTime, bool> map = {};
-      for (final d in snapshot.docs) {
-        final ts = d['timestamp'] as Timestamp?;
-        final profit = double.tryParse(d['profit'].toString()) ?? 0.0;
-        if (ts == null) continue;
-        final dt = ts.toDate();
-        final day = DateTime(dt.year, dt.month, dt.day);
-        
-        if (map.containsKey(day)) {
-          map[day] = map[day]! || profit > 0;
-        } else {
-          map[day] = profit > 0;
-        }
+      
+      final day = DateTime(tradeDate.year, tradeDate.month, tradeDate.day);
+      
+      if (profitDays.containsKey(day)) {
+        profitDays[day] = profitDays[day]! || profit > 0;
+      } else {
+        profitDays[day] = profit > 0;
       }
-
-      setState(() => _profitDays = map);
-    } catch (e) {
-      print('Error loading profit calendar: $e');
     }
+
+    return profitDays;
   }
 
   // ============================
-  // Handle back button press to close app
+  // Handle back button
   // ============================
   Future<bool> _onWillPop() async {
     DateTime now = DateTime.now();
@@ -178,7 +187,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       currentBackPressTime = now;
       
       final theme = _getTheme(context);
-      // Show snackbar message
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -221,17 +229,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
   
-  // Custom logic to calculate the horizontal offset for the indicator.
   double _getIndicatorXOffset(int index, double screenWidth) {
     final itemWidth = screenWidth / 4.0;
     const indicatorSize = 48.0;
 
     switch (index) {
-      case 0: // Home (1st slot)
+      case 0: 
         return (itemWidth / 2.0) - (indicatorSize / 2.0); 
-      case 1: // Stats (3rd slot)
+      case 1: 
         return (itemWidth * 2.5) - (indicatorSize / 2.0); 
-      case 2: // Profile (4th slot)
+      case 2: 
         return (itemWidth * 3.5) - (indicatorSize / 2.0); 
       default:
         return -indicatorSize; 
@@ -239,7 +246,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   // ============================
-  // Theme Helper - Get current theme based on ThemeService
+  // Theme Helper
   // ============================
   AppColors _getTheme(BuildContext context) {
     final themeService = Provider.of<ThemeService>(context, listen: true);
@@ -247,7 +254,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   // ============================
-  // UI - small reusable stat card
+  // UI - Small reusable stat card
   // ============================
   Widget _smallStat({
     required BuildContext context,
@@ -265,16 +272,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
       decoration: BoxDecoration(
         color: theme.cardDark,
         borderRadius: BorderRadius.circular(kBorderRadius),
-        border: Border.all(
-          color: borderColor ?? theme.cardDark,
-          width: 1.5,
-        ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(themeService.isDarkMode ? 0.3 : 0.1),
-            spreadRadius: 1,
-            blurRadius: 5,
-            offset: const Offset(0, 3),
+            color: Colors.black.withOpacity(themeService.isDarkMode ? 0.2 : 0.05),
+            spreadRadius: 0,
+            blurRadius: 10,
+            offset: const Offset(0, 4),
           ),
         ],
       ),
@@ -285,22 +288,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
           Row(
             children: [
               Container(
-                padding: const EdgeInsets.all(6),
+                padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
-                  color: iconColor.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(6),
+                  color: iconColor.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(kBorderRadius), 
                 ),
                 child: Icon(icon, color: iconColor, size: 20),
               ),
-              const SizedBox(width: 8),
-              Text(label,
-                  style: AppTextStyles.bodySecondary(color: theme.textFaded).copyWith(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                  )),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppTextStyles.bodySecondary(color: theme.textFaded).copyWith(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    )),
+              ),
             ],
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
           Text(value, 
             style: AppTextStyles.heading2(color: iconColor).copyWith(
               fontWeight: FontWeight.w800,
@@ -313,15 +320,36 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   // ============================
-  // Calendar widget
+  // Auto-Animating Calendar widget
   // ============================
-  Widget _buildMiniCalendar(BuildContext context) {
+  Widget _buildAutoAnimatingCalendar(BuildContext context, Map<DateTime, bool> profitDays, List<Map<String, dynamic>> trades) {
     final theme = _getTheme(context);
-    final now = _calendarDate;
+    final themeService = Provider.of<ThemeService>(context, listen: false);
+    final now = DateTime.now();
     final first = DateTime(now.year, now.month, 1);
     final last = DateTime(now.year, now.month + 1, 0);
     final days = last.day;
     final startWeekday = first.weekday;
+
+    final Map<DateTime, double> dailyProfits = {};
+    for (final trade in trades) {
+      final createdAt = trade['createdAt'];
+      final profit = double.tryParse(trade['profit'].toString()) ?? 0.0;
+      
+      if (createdAt == null) continue;
+      
+      DateTime tradeDate;
+      if (createdAt is Timestamp) {
+        tradeDate = createdAt.toDate();
+      } else if (createdAt is DateTime) {
+        tradeDate = createdAt;
+      } else {
+        continue;
+      }
+      
+      final day = DateTime(tradeDate.year, tradeDate.month, tradeDate.day);
+      dailyProfits[day] = (dailyProfits[day] ?? 0.0) + profit;
+    }
 
     final List<Widget> cells = [];
 
@@ -331,34 +359,75 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     for (int d = 1; d <= days; d++) {
       final date = DateTime(now.year, now.month, d);
-      final profitable = _profitDays[date] ?? false;
+      final profitable = profitDays[date] ?? false;
+      final dailyProfit = dailyProfits[date] ?? 0.0;
       final isToday = DateTime.now().year == date.year &&
           DateTime.now().month == date.month &&
           DateTime.now().day == date.day;
+      final hasTrades = dailyProfits.containsKey(date);
+
+      Widget cellContent;
+      
+      if (_showMoneyMode && hasTrades) {
+        cellContent = Column(
+          key: ValueKey('money_$d'), 
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              '\$${dailyProfit.abs().toStringAsFixed(0)}',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: dailyProfit >= 0 ? theme.success : theme.error,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Icon(
+              dailyProfit >= 0 ? Icons.arrow_upward : Icons.arrow_downward,
+              size: 10,
+              color: dailyProfit >= 0 ? theme.success : theme.error,
+            ),
+          ],
+        );
+      } else {
+        cellContent = Column(
+          key: ValueKey('day_$d'), 
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              d.toString(),
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: isToday ? FontWeight.w900 : FontWeight.w600,
+                color: isToday ? theme.accent : theme.textLight,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Container(
+              width: 6,
+              height: 6,
+              decoration: BoxDecoration(
+                color: profitable ? theme.success : theme.textFaded.withOpacity(0.2),
+                shape: BoxShape.circle,
+              ),
+            )
+          ],
+        );
+      }
 
       cells.add(
         Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                d.toString(),
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: isToday ? FontWeight.w900 : FontWeight.w600,
-                  color: isToday ? theme.accent : theme.textLight,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Container(
-                width: 6,
-                height: 6,
-                decoration: BoxDecoration(
-                  color: profitable ? theme.success : theme.textFaded.withOpacity(0.2),
-                  shape: BoxShape.circle,
-                ),
-              )
-            ],
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 800),
+            switchInCurve: Curves.easeInOut,
+            switchOutCurve: Curves.easeInOut,
+            transitionBuilder: (Widget child, Animation<double> animation) {
+              return FadeTransition(
+                opacity: animation,
+                child: child,
+              );
+            },
+            child: cellContent,
           ),
         ),
       );
@@ -369,39 +438,48 @@ class _DashboardScreenState extends State<DashboardScreen> {
       decoration: BoxDecoration(
         color: theme.cardDark,
         borderRadius: BorderRadius.circular(kBorderRadius),
-        border: Border.all(
-          color: theme.primary.withOpacity(0.3),
-          width: 1,
-        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(themeService.isDarkMode ? 0.2 : 0.05),
+            spreadRadius: 0,
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       child: Column(
         children: [
-          // header
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               _calendarNavButton(context, Icons.chevron_left, () {
-                setState(() {
-                  _calendarDate = DateTime(_calendarDate.year, _calendarDate.month - 1);
-                });
-                _loadProfitCalendar();
               }),
-              Text('${_monthName(_calendarDate.month)} ${_calendarDate.year}',
-                  style: AppTextStyles.heading2(color: theme.textLight).copyWith(
-                    fontWeight: FontWeight.w700,
-                  )),
+              Column(
+                children: [
+                  Text('${_monthName(now.month)} ${now.year}',
+                      style: AppTextStyles.heading2(color: theme.textLight).copyWith(
+                        fontWeight: FontWeight.w700,
+                      )),
+                  const SizedBox(height: 4),
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 500),
+                    child: Text(
+                      _showMoneyMode ? '💰 Daily P&L' : '📅 Trading Days',
+                      key: ValueKey(_showMoneyMode),
+                      style: AppTextStyles.bodySecondary(color: theme.textFaded).copyWith(
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
               _calendarNavButton(context, Icons.chevron_right, () {
-                setState(() {
-                  _calendarDate = DateTime(_calendarDate.year, _calendarDate.month + 1);
-                });
-                _loadProfitCalendar();
               }),
             ],
           ),
 
           const SizedBox(height: 12),
 
-          // Weekday headings
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
@@ -428,12 +506,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _calendarNavButton(BuildContext context, IconData icon, VoidCallback onPressed) {
     final theme = _getTheme(context);
+    final themeService = Provider.of<ThemeService>(context, listen: false);
     
     return Container(
       decoration: BoxDecoration(
         color: theme.cardDark,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: theme.textFaded.withOpacity(0.2)),
+        borderRadius: BorderRadius.circular(kBorderRadius), 
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(themeService.isDarkMode ? 0.2 : 0.05),
+            spreadRadius: 0,
+            blurRadius: 5,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
       child: IconButton(
         icon: Icon(icon, color: theme.textLight, size: 20),
@@ -490,35 +576,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // ============================
   @override
   Widget build(BuildContext context) {
+    final tradesProvider = Provider.of<TradesProvider>(context);
     final themeService = Provider.of<ThemeService>(context, listen: true);
     final theme = _getTheme(context);
     final double screenWidth = MediaQuery.of(context).size.width;
-    final pnlColor = totalProfit >= 0 ? theme.success : theme.error;
+
+    final stats = _calculateStats(tradesProvider.trades);
+    final profitDays = _buildProfitCalendar(tradesProvider.trades);
+    final pnlColor = stats['totalProfit'] >= 0 ? theme.success : theme.error;
 
     return WillPopScope(
       onWillPop: _onWillPop,
       child: Scaffold(
         backgroundColor: theme.background,
-        appBar: AppBar(
-          elevation: 0,
-          backgroundColor: theme.background,
-          automaticallyImplyLeading: false,
-          title: Text('TradeMate', style: AppTextStyles.heading2(color: theme.primary).copyWith(
-            fontWeight: FontWeight.w900,
-          )),
-          actions: [
-            // Empty actions - no logout button
-          ],
-        ),
-
-        // =============================
-        // CENTER FLOATING BUTTON (+)
-        // =============================
+        
         floatingActionButton: FloatingActionButton(
           onPressed: () {
             setState(() => _selectedIndex = -1); 
             Navigator.push(context, MaterialPageRoute(builder: (_) => const AddTradeScreen())).then((_) {
-              if(mounted) setState(() => _selectedIndex = 0);
+              if(mounted) {
+                Provider.of<TradesProvider>(context, listen: false).fetchTrades();
+                setState(() => _selectedIndex = 0);
+              }
             });
           },
           elevation: 4,
@@ -528,9 +607,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
         floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
 
-        // =============================
-        // CUSTOM BOTTOM NAV BAR
-        // =============================
         bottomNavigationBar: Container(
           height: 70,
           key: _bottomNavKey,
@@ -594,7 +670,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         body: SafeArea(
           child: RefreshIndicator(
             onRefresh: () async {
-              await _loadEverything();
+              await tradesProvider.fetchTrades();
             },
             color: theme.primary,
             backgroundColor: theme.background,
@@ -604,13 +680,32 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Text('TradeMate', 
+                      style: AppTextStyles.heading2(color: theme.primary).copyWith(
+                        fontWeight: FontWeight.w900,
+                        fontSize: 28,
+                      ),
+                    ),
+                  ),
+                  
+                  const SizedBox(height: 10),
+
                   // Header & Total PnL Card
                   Container(
                     padding: const EdgeInsets.all(20),
                     decoration: BoxDecoration(
                       color: theme.cardDark,
                       borderRadius: BorderRadius.circular(kBorderRadius),
-                      border: Border.all(color: theme.primary.withOpacity(0.2)),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(themeService.isDarkMode ? 0.2 : 0.05),
+                          spreadRadius: 0,
+                          blurRadius: 10,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
                     ),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -638,7 +733,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           children: [
                             Icon(Icons.trending_up, color: pnlColor, size: 36),
                             const SizedBox(height: 8),
-                            Text('\$${totalProfit.toStringAsFixed(2)}',
+                            Text('\$${stats['totalProfit'].toStringAsFixed(2)}',
                                 style: AppTextStyles.heading1(color: pnlColor).copyWith(
                                   fontWeight: FontWeight.w900,
                                   fontSize: 32,
@@ -667,7 +762,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       _smallStat(
                         context: context,
                         label: 'Win Rate',
-                        value: '${winRate.toStringAsFixed(0)}%',
+                        value: '${stats['winRate'].toStringAsFixed(0)}%',
                         icon: Icons.check_circle_outline,
                         iconColor: theme.success,
                         borderColor: theme.success.withOpacity(0.3),
@@ -675,7 +770,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       _smallStat(
                         context: context,
                         label: 'Average PnL',
-                        value: '\$${avgProfit.toStringAsFixed(2)}',
+                        value: '\$${stats['avgProfit'].toStringAsFixed(2)}',
                         icon: Icons.calculate_outlined,
                         iconColor: theme.accent,
                         borderColor: theme.accent.withOpacity(0.3),
@@ -683,14 +778,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       _smallStat(
                         context: context,
                         label: 'Best Trade',
-                        value: '\$${bestTrade.toStringAsFixed(2)}',
+                        value: '\$${stats['bestTrade'].toStringAsFixed(2)}',
                         icon: Icons.rocket_launch_outlined,
                         iconColor: theme.primary,
                       ),
                       _smallStat(
                         context: context,
                         label: 'Worst Trade',
-                        value: '\$${worstTrade.toStringAsFixed(2)}',
+                        value: '\$${stats['worstTrade'].toStringAsFixed(2)}',
                         icon: Icons.heart_broken_outlined,
                         iconColor: theme.secondary,
                         borderColor: theme.secondary.withOpacity(0.3),
@@ -700,14 +795,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
                   const SizedBox(height: 20),
 
-                  // Calendar and Recent Trades
+                  // Calendar
                   Text('Trading Journal', style: AppTextStyles.heading3(color: theme.textLight).copyWith(
                     fontWeight: FontWeight.w700,
                   )),
                   const SizedBox(height: 12),
                   
-                  // Calendar
-                  _buildMiniCalendar(context),
+                  _buildAutoAnimatingCalendar(context, profitDays, tradesProvider.trades),
 
                   const SizedBox(height: 20),
 
@@ -730,84 +824,73 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
                   const SizedBox(height: 10),
 
-                  // Recent trades list (stream)
-                  Container(
-                    decoration: BoxDecoration(
-                      color: theme.cardDark,
-                      borderRadius: BorderRadius.circular(kBorderRadius),
-                    ),
-                    child: StreamBuilder<QuerySnapshot>(
-                      stream: _db
-                          .collection('trades')
-                          .doc(_auth.currentUser?.uid)
-                          .collection('user_trades')
-                          .orderBy('timestamp', descending: true)
-                          .limit(6)
-                          .snapshots(),
-                      builder: (context, snap) {
-                        if (snap.connectionState == ConnectionState.waiting) {
-                          return Padding(
-                            padding: const EdgeInsets.all(20),
-                            child: Center(child: CircularProgressIndicator(color: theme.primary)),
-                          );
-                        }
-                        if (!snap.hasData || snap.data!.docs.isEmpty) {
-                          return Padding(
-                            padding: const EdgeInsets.all(20),
-                            child: Center(child: Text('No recent trades logged.', 
-                              style: TextStyle(color: theme.textFaded)
-                            )),
-                          );
-                        }
-
-                        final docs = snap.data!.docs;
-                        return ListView.separated(
-                          shrinkWrap: true,
-                          physics: const NeverScrollableScrollPhysics(),
-                          itemCount: docs.length,
-                          separatorBuilder: (_, __) => Divider(height: 1, color: theme.textFaded.withOpacity(0.1)),
-                          itemBuilder: (context, i) {
-                            final t = docs[i];
-                            final profit = double.tryParse(t['profit'].toString()) ?? 0.0;
-                            final listPnlColor = profit >= 0 ? theme.success : theme.error;
-                            
-                            return ListTile(
-                              tileColor: theme.cardDark,
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                              leading: Container(
-                                padding: const EdgeInsets.all(8),
-                                decoration: BoxDecoration(
-                                  color: listPnlColor.withOpacity(0.1),
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: Icon(
-                                  profit >= 0 ? Icons.arrow_upward : Icons.arrow_downward,
-                                  color: listPnlColor,
-                                  size: 20,
-                                ),
-                              ),
-                              title: Text(t['symbol'] ?? 'UNKNOWN', style: AppTextStyles.heading3(color: theme.textLight).copyWith(
-                                fontWeight: FontWeight.w700,
-                              )),
-                              subtitle: Text('Lot ${t['lotSize'] ?? '—'} | ${_formatTimestamp(t['timestamp'])}', 
-                                style: TextStyle(color: theme.textFaded, fontSize: 13)),
-                              trailing: Text(
-                                (profit >= 0 ? '+' : '') + '\$${profit.toStringAsFixed(2)}',
-                                style: TextStyle(
-                                  color: listPnlColor,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 16
-                                ),
-                              ),
-                              onTap: () {
-                                // TODO: open trade details
+                  // Recent trades list - CONVERTED TO INDIVIDUAL CARDS
+                  tradesProvider.isLoading
+                      ? Center(child: CircularProgressIndicator(color: theme.primary))
+                      : tradesProvider.trades.isEmpty
+                          ? Center(child: Text('No recent trades logged.', style: TextStyle(color: theme.textFaded)))
+                          : ListView.separated(
+                              shrinkWrap: true,
+                              physics: const NeverScrollableScrollPhysics(),
+                              itemCount: tradesProvider.trades.length > 6 ? 6 : tradesProvider.trades.length,
+                              separatorBuilder: (_, __) => const SizedBox(height: 12), // Space between cards
+                              itemBuilder: (context, i) {
+                                final trade = tradesProvider.trades[i];
+                                final profit = double.tryParse(trade['profit'].toString()) ?? 0.0;
+                                final listPnlColor = profit >= 0 ? theme.success : theme.error;
+                                
+                                // Individual Card for each trade
+                                return Container(
+                                  decoration: BoxDecoration(
+                                    // Color is handled by the ListTile's tileColor to ensure clipping works with shape
+                                    borderRadius: BorderRadius.circular(kBorderRadius),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.black.withOpacity(themeService.isDarkMode ? 0.2 : 0.05),
+                                        spreadRadius: 0,
+                                        blurRadius: 10,
+                                        offset: const Offset(0, 4),
+                                      ),
+                                    ],
+                                  ),
+                                  child: ListTile(
+                                    tileColor: theme.cardDark,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(kBorderRadius),
+                                    ),
+                                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                    leading: Container(
+                                      padding: const EdgeInsets.all(8),
+                                      decoration: BoxDecoration(
+                                        color: listPnlColor.withOpacity(0.1),
+                                        borderRadius: BorderRadius.circular(kBorderRadius), 
+                                      ),
+                                      child: Icon(
+                                        profit >= 0 ? Icons.arrow_upward : Icons.arrow_downward,
+                                        color: listPnlColor,
+                                        size: 20,
+                                      ),
+                                    ),
+                                    title: Text(trade['symbol'] ?? 'UNKNOWN', style: AppTextStyles.heading3(color: theme.textLight).copyWith(
+                                      fontWeight: FontWeight.w700,
+                                    )),
+                                    subtitle: Text('Lot ${trade['amount'] ?? '—'} | ${_formatTimestamp(trade['createdAt'])}', 
+                                      style: TextStyle(color: theme.textFaded, fontSize: 13)),
+                                    trailing: Text(
+                                      (profit >= 0 ? '+' : '') + '\$${profit.toStringAsFixed(2)}',
+                                      style: TextStyle(
+                                        color: listPnlColor,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 16
+                                      ),
+                                    ),
+                                    onTap: () {
+                                      // TODO: open trade details
+                                    },
+                                  ),
+                                );
                               },
-                            );
-                          },
-                        );
-                      },
-                    ),
-                  ),
+                            ),
 
                   const SizedBox(height: 24),
                 ],
