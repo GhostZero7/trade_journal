@@ -2,6 +2,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:cloud_firestore/cloud_firestore.dart'; // Import Firestore for Timestamp
 
 import '../../core/constants/app_colors.dart';
 import '../../core/theme/text_styles.dart';
@@ -9,9 +10,13 @@ import '../../core/theme/theme_service.dart';
 import '../../providers/trades_provider.dart';
 // Ensure this import points to your new service file
 import '../../services/market_data_service.dart'; 
+import '../../core/constants/app_constants.dart'; // Import for kTradingStrategies
 
 class AddTradeScreen extends StatefulWidget {
-  const AddTradeScreen({super.key});
+  // Added optional 'trade' map for editing existing trades
+  final Map<String, dynamic>? trade;
+
+  const AddTradeScreen({super.key, this.trade});
 
   @override
   State<AddTradeScreen> createState() => _AddTradeScreenState();
@@ -23,6 +28,7 @@ class _AddTradeScreenState extends State<AddTradeScreen> {
   final _exitCtrl = TextEditingController();
   final _lotCtrl = TextEditingController();
   final _notesCtrl = TextEditingController();
+  final _strategyCtrl = TextEditingController(); // New: Controller for strategy
 
   // Trade values
   // Twelve Data prefers slash format (EUR/USD)
@@ -30,6 +36,7 @@ class _AddTradeScreenState extends State<AddTradeScreen> {
   String _type = "Buy";
   double _profit = 0.0;
   bool _loading = false;
+  String? _tradeId; // Document ID for editing
   
   // Market Data State
   final _marketService = MarketDataService(); 
@@ -41,7 +48,30 @@ class _AddTradeScreenState extends State<AddTradeScreen> {
   @override
   void initState() {
     super.initState();
+    _loadInitialTradeData();
     _startPriceFeed();
+    
+    // Listen for changes to automatically calculate P&L
+    _entryCtrl.addListener(_calculatePL);
+    _exitCtrl.addListener(_calculatePL);
+    _lotCtrl.addListener(_calculatePL);
+  }
+
+  void _loadInitialTradeData() {
+    if (widget.trade != null) {
+      final trade = widget.trade!;
+      _tradeId = trade['id'] as String?; 
+
+      _pair = trade['symbol'] as String? ?? "EUR/USD";
+      _type = trade['type'] as String? ?? "Buy";
+      _entryCtrl.text = trade['entryPrice']?.toString() ?? '';
+      _exitCtrl.text = trade['exitPrice']?.toString() ?? '';
+      _lotCtrl.text = trade['amount']?.toString() ?? '';
+      _notesCtrl.text = trade['notes'] as String? ?? '';
+      _strategyCtrl.text = trade['strategy'] as String? ?? ''; // Load existing strategy
+
+      _calculatePL();
+    }
   }
 
   @override
@@ -51,6 +81,7 @@ class _AddTradeScreenState extends State<AddTradeScreen> {
     _exitCtrl.dispose();
     _lotCtrl.dispose();
     _notesCtrl.dispose();
+    _strategyCtrl.dispose(); // Dispose strategy controller
     super.dispose();
   }
 
@@ -59,10 +90,7 @@ class _AddTradeScreenState extends State<AddTradeScreen> {
   // -----------------------------
   void _startPriceFeed() {
     _priceTimer?.cancel();
-    
-    // Fetch immediately on load
     _fetchRealPrice();
-
     // Update every 15 seconds to respect Free Tier limits
     _priceTimer = Timer.periodic(const Duration(seconds: 15), (timer) {
       if (mounted) {
@@ -72,27 +100,23 @@ class _AddTradeScreenState extends State<AddTradeScreen> {
   }
 
   Future<void> _fetchRealPrice() async {
-    // Reset error state if we are retrying manually, 
-    // but don't wipe the old price immediately to avoid flickering
     if (_hasError) {
       setState(() => _hasError = false);
     }
 
-    final price = await _marketService.getPrice(_pair);
+    final price = await _marketService.getQuotePrice(_pair);
     
     if (!mounted) return;
 
     if (price != null) {
       setState(() {
         _hasError = false;
-        // Determine if price went up or down compared to last fetch
         if (_currentMarketPrice != null) {
           _isPriceUp = price >= _currentMarketPrice!;
         }
         _currentMarketPrice = price;
       });
     } else {
-      // Only show error if we don't have a cached price
       if (_currentMarketPrice == null) {
         setState(() => _hasError = true);
       }
@@ -120,8 +144,18 @@ class _AddTradeScreenState extends State<AddTradeScreen> {
     }
 
     double multiplier = 1.0;
-    if (_pair.contains("XAU")) multiplier = 100.0; // Gold usually 100oz contract
-    if (_pair.contains("JPY")) multiplier = 1000.0; // JPY pip multiplier
+    
+    // Set appropriate multipliers based on instrument type
+    if (_pair.contains("JPY")) {
+      // JPY pairs: 100,000 units per standard lot
+      multiplier = 100000.0;
+    } else if (_pair.contains("XAU")) {
+      // Gold: 100 oz per standard lot
+      multiplier = 100.0;
+    } else {
+      // Standard Forex pairs (EUR/USD, GBP/USD): 100,000 units per standard lot
+      multiplier = 100000.0;
+    }
 
     double result = _type == "Buy" 
         ? (exit - entry) * lots * multiplier
@@ -134,6 +168,8 @@ class _AddTradeScreenState extends State<AddTradeScreen> {
   // Save Using Provider
   // -----------------------------
   Future<void> _saveTrade() async {
+    final theme = Provider.of<ThemeService>(context, listen: false).isDarkMode ? AppColors.dark : AppColors.light;
+
     if (_entryCtrl.text.isEmpty ||
         _exitCtrl.text.isEmpty ||
         _lotCtrl.text.isEmpty) {
@@ -146,34 +182,52 @@ class _AddTradeScreenState extends State<AddTradeScreen> {
     setState(() => _loading = true);
 
     try {
+      final strategy = _strategyCtrl.text.trim();
+
       final tradeData = {
-        "symbol": _pair.replaceAll('/', ''), // Save as EURUSD (no slash) for database consistency if preferred
+        "symbol": _pair.replaceAll('/', ''), // Save as EURUSD (no slash)
         "type": _type,
         "amount": double.tryParse(_lotCtrl.text) ?? 0,
         "result": _profit >= 0 ? "Win" : "Loss",
         "profit": _profit,
         "notes": _notesCtrl.text.trim(),
-        "createdAt": DateTime.now(),
+        "strategy": strategy.isNotEmpty ? strategy : 'Custom', // New Strategy Field
+        "createdAt": widget.trade?['createdAt'] ?? Timestamp.now(), // Preserve or new
         "entryPrice": double.tryParse(_entryCtrl.text) ?? 0,
         "exitPrice": double.tryParse(_exitCtrl.text) ?? 0,
       };
 
-      await Provider.of<TradesProvider>(context, listen: false)
-          .addTrade(tradeData);
+      final provider = Provider.of<TradesProvider>(context, listen: false);
 
-      if (mounted) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Trade added successfully!")),
-        );
+      if (_tradeId != null) {
+        // Update logic if editing
+        await provider.updateTrade(_tradeId!, tradeData);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Trade updated successfully!"), backgroundColor: theme.success),
+          );
+        }
+      } else {
+        // Add logic
+        await provider.addTrade(tradeData);
+        if (mounted) {
+          Navigator.pop(context);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Trade added successfully!")),
+          );
+        }
       }
+      
+      // Close screen if editing (if adding, it was handled above)
+      if (mounted && _tradeId != null) Navigator.pop(context);
+
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text("Error saving trade: $e")),
       );
     }
 
-    setState(() => _loading = false);
+    if (mounted) setState(() => _loading = false);
   }
 
   // -----------------------------
@@ -220,12 +274,68 @@ class _AddTradeScreenState extends State<AddTradeScreen> {
     );
   }
 
+  // New Strategy Autocomplete Field
+  Widget _buildStrategyField(AppColors theme) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text("Strategy", style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: theme.textFaded)),
+        const SizedBox(height: 6),
+        Autocomplete<String>(
+          optionsBuilder: (TextEditingValue textEditingValue) {
+            if (textEditingValue.text.isEmpty) {
+              return kTradingStrategies;
+            }
+            return kTradingStrategies.where((String option) {
+              return option.toLowerCase().contains(textEditingValue.text.toLowerCase());
+            });
+          },
+          onSelected: (String selection) {
+            _strategyCtrl.text = selection;
+          },
+          fieldViewBuilder: (BuildContext context, TextEditingController textEditingController, FocusNode focusNode, VoidCallback onFieldSubmitted) {
+            // Sync controllers
+            if (_strategyCtrl.text.isNotEmpty && textEditingController.text.isEmpty) {
+               textEditingController.text = _strategyCtrl.text;
+            }
+            textEditingController.addListener(() {
+              _strategyCtrl.text = textEditingController.text;
+            });
+
+            return TextField(
+              controller: textEditingController,
+              focusNode: focusNode,
+              onSubmitted: (value) => onFieldSubmitted(),
+              style: TextStyle(color: theme.textLight),
+              decoration: InputDecoration(
+                hintText: "e.g. Breakout",
+                hintStyle: TextStyle(color: theme.textFaded.withOpacity(0.5)),
+                filled: true,
+                fillColor: theme.cardDark,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: BorderSide(color: theme.primary.withOpacity(0.3)),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: BorderSide(color: theme.primary, width: 2),
+                ),
+              ),
+            );
+          },
+        ),
+      ],
+    );
+  }
+
   // -----------------------------
   // MAIN BUILD UI
   // -----------------------------
   @override
   Widget build(BuildContext context) {
     final theme = _getTheme(context);
+    final isEditing = widget.trade != null;
     
     // Determine decimal formatting
     int decimals = _pair.contains("JPY") ? 2 : (_pair.contains("XAU") ? 2 : 5);
@@ -241,7 +351,7 @@ class _AddTradeScreenState extends State<AddTradeScreen> {
     return Scaffold(
       backgroundColor: theme.background,
       appBar: AppBar(
-        title: Text("Add Trade", style: TextStyle(color: theme.textLight)),
+        title: Text(isEditing ? "Edit Trade" : "Add Trade", style: TextStyle(color: theme.textLight)),
         backgroundColor: theme.background,
         elevation: 0,
         iconTheme: IconThemeData(color: theme.textLight),
@@ -249,7 +359,7 @@ class _AddTradeScreenState extends State<AddTradeScreen> {
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // Pair Dropdown
+          // Pair Dropdown (Untouched as requested)
           Text("Instrument",
               style: TextStyle(
                   fontWeight: FontWeight.w600, color: theme.textFaded)),
@@ -394,6 +504,11 @@ class _AddTradeScreenState extends State<AddTradeScreen> {
             _typeButton("Sell", theme.error, context),
           ]),
 
+          const SizedBox(height: 20),
+
+          // Strategy Tagging (NEW FEATURE)
+          _buildStrategyField(theme),
+          
           const SizedBox(height: 20),
 
           // Input fields

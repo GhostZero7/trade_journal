@@ -7,7 +7,8 @@ class MarketDataService {
   static const String _baseUrl = 'https://api.twelvedata.com';
 
   /// Fetches the current price for a given symbol (e.g., "EUR/USD", "XAU/USD")
-  Future<double?> getPrice(String symbol) async {
+  /// Renamed from getPrice to getQuotePrice to match usage in AddTradeScreen.
+  Future<double?> getQuotePrice(String symbol) async {
     try {
       // Twelve Data format usually requires a slash for forex, e.g., EUR/USD
       // We'll ensure the format is correct.

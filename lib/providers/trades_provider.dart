@@ -9,6 +9,14 @@ class TradesProvider with ChangeNotifier {
 
   List<Map<String, dynamic>> get trades => _trades;
 
+  // Utility function to format timestamp data for display
+  String _formatTimestamp(dynamic ts) {
+    if (ts is Timestamp) {
+      return ts.toDate().toString(); // Return as a standard date string or customize as needed
+    }
+    return ts?.toString() ?? 'N/A';
+  }
+
   Future<void> fetchTrades() async {
     isLoading = true;
     notifyListeners();
@@ -25,9 +33,14 @@ class TradesProvider with ChangeNotifier {
     _trades.clear();
 
     for (var doc in snapshot.docs) {
+      // Data retrieved from Firestore is Map<String, dynamic>
+      final data = doc.data();
+
       _trades.add({
         'id': doc.id,
-        ...doc.data(),
+        ...data,
+        // Ensure createdAt is always a Timestamp if it exists, otherwise null/String
+        'createdAt': data['createdAt'] is Timestamp ? data['createdAt'] : _formatTimestamp(data['createdAt']),
       });
     }
 
@@ -44,9 +57,29 @@ class TradesProvider with ChangeNotifier {
         .collection('trades')
         .add({
       ...trade,
+      // Use server timestamp for creation
       'createdAt': FieldValue.serverTimestamp(),
     });
 
+    // Refresh data to include the new trade
+    await fetchTrades();
+  }
+
+  Future<void> updateTrade(String id, Map<String, dynamic> trade) async {
+    final uid = FirebaseAuth.instance.currentUser!.uid;
+    
+    // We update the trade data, but ensure 'createdAt' is NOT overwritten 
+    // unless explicitly needed. Firestore set() or update() will handle this.
+    // Since the Map passed from the screen already contains the original 'createdAt'
+    // or a new one, we can just pass the map.
+    await _firestore
+        .collection('users')
+        .doc(uid)
+        .collection('trades')
+        .doc(id)
+        .update(trade); 
+
+    // Refresh data to update the local list
     await fetchTrades();
   }
 
